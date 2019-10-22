@@ -16,44 +16,47 @@ library(odbc)
 
 mn_tracts <- st_read("Shapefile/86096_Freight_Tract_to_Tract_10_16_19_1_origin.shp")
 
+# Get ID of tracts, starting with state (27) designation
 tracts_id <- mn_tracts %>%
   mutate(Name2 = name) %>%
   separate(Name2, into = c("Prefix", "Tract"), sep = -11)
 
+# Get ID of metro tracts (no geometry)
 gis_db <- dbConnect(odbc(), "GIS")
-
 metro_tracts <- dbGetQuery(gis_db, "SELECT * FROM GISLibrary.dbo.CENSUS2010TIGERTRACT")
-
 dbDisconnect(gis_db)
 
+# Create Greater MN shapefile
 metro_tracts_id_only <- metro_tracts %>%
   transmute(Tract = GEOID10)
 
 greater_mn_tracts <- anti_join(tracts_id, metro_tracts_id_only, by = "Tract")
 
+# Get metro tracts as shapefile
 gis_db <- dbConnect(odbc(), "GIS")
-
 metro_tracts_shp <- st_as_sf(dbGetQuery(gis_db, "SELECT *, Shape.STAsText() as wkt FROM GISLibrary.dbo.CENSUS2010TIGERTRACT"), wkt = "wkt", crs = 26915)
-
 dbDisconnect(gis_db)
 
 metro_dissolve <- st_union(metro_tracts_shp)
 
+# Get centroids
 greater_mn_centroids <- st_centroid(greater_mn_tracts)
 
 metro_centroid <- st_centroid(metro_dissolve)
 
-od_centroids <- st_union(greater_mn_centroids, metro_centroid)
+# od_centroids <- st_union(greater_mn_centroids, metro_centroid)
+# 
+# od_centroids_attr <- od_centroids %>%
+#   mutate(Tract = ifelse(is.na(Tract), "Metro", Tract))
 
-od_centroids_attr <- od_centroids %>%
-  mutate(Tract = ifelse(is.na(Tract), "Metro", Tract))
-
-st_write(od_centroids, "Greater_MN_Metro_Centroids.shp", "ESRI Shapefile")
+# st_write(od_centroids, "Greater_MN_Metro_Centroids.shp", "ESRI Shapefile")
 
 st_write(greater_mn_centroids, "Greater MN Centroids.shp", "ESRI Shapefile")
 st_write(metro_centroids, "Metro Centroid.shp", "ESRI Shapefile")
 
 ```
+
+# Using st_union creates shapefile that doesn't render correctly in Tableau with shape type (works fine with shapefile type) - merge the two shapefiles using Arc so CRS compatibility is fixed automatically
 
 ```{python}
 import arcpy
@@ -67,5 +70,112 @@ arcpy.MakeTableView_management("Metro Centroid.shp", "metro")
 
 arcpy.Merge_management(["greater_mn", "metro"], "Greater_MN_Metro_Merge")
 
+```
+
+```{r}
+greater_mn_metro <- st_read("Greater_MN_Metro_Merge.shp")
+
+od_centroids <- greater_mn_metro %>%
+  mutate(Tract = ifelse(is.na(Tract), "Metro", Tract))
+
+st_write(od_centroids, "OD_Centroids.shp")
+```
+
+```{r}
+library(data.table)
+
+freight_od <- fread("86096_Freight_Tract_to_Tract_10_16_19_1_od_comm.csv")
+
+freight_od_ids <- freight_od[, "Origin_tract" := substring(`Origin Zone Name`, 10, length(`Origin Zone Name`))][, "Destination_tract" := substring(`Destination Zone Name`, 10, length(`Destination Zone Name`))]
+
+o_ids <- metro_tracts %>%
+  transmute(O_tract = GEOID10,
+            O_metro_desig = "Metro")
+
+o_tr <- data.table(o_ids)
+
+setkey(freight_od_ids, Origin_tract)
+setkey(o_tr, O_tract)
+
+freight_origins <- o_tr[freight_od_ids]
+
+dest_ids <- metro_tracts %>%
+  transmute(D_tract = GEOID10,
+            D_metro_desig = "Metro")
+
+d_tr <- data.table(dest_ids)
+
+setkey(freight_origins, Destination_tract)
+setkey(d_tr, D_tract)
+
+freight_dests <- d_tr[freight_origins]
+
+freight_od <- freight_dests[, "Dest_tract_or_metro" := ifelse(is.na(D_metro_desig), D_tract, D_metro_desig)][, "Orig_tract_or_metro" := ifelse(is.na(O_metro_desig), O_tract, O_metro_desig)]
+
+fwrite(freight_od, "SL Results with Metro Designation.csv")
+
+freight_od %>%
+  head()
+```
+
+```{r}
+# Get ID of metro tracts (no geometry)
+gis_db <- dbConnect(odbc(), "GIS")
+metro_tracts <- dbGetQuery(gis_db, "SELECT GEOID10 FROM GISLibrary.dbo.CENSUS2010TIGERTRACT")
+dbDisconnect(gis_db)
+
+metro_tr <- metro_tracts %>%
+  transmute(Metro_desig = "Metro",
+            Tract = GEOID10)
+
+# Read in SL data
+freight_od <- fread("86096_Freight_Tract_to_Tract_10_16_19_1_od_comm.csv")
+
+freight_pared <- freight_od %>%
+  filter(`Day Part` == "0: All Day (12am-12am)" & `Day Type` == "0: All Days (M-Su)") %>%
+  dplyr::select(`Origin Zone Name`, `Destination Zone Name`, `Average Daily O-D Traffic (StL Index)`) %>%
+  separate(`Origin Zone Name`, into = c("Prefix", "Origin_tract"), sep = -11) %>%
+  select(-Prefix) %>%
+  separate(`Destination Zone Name`, into = c("Prefix", "Dest_tract"), sep = -11) %>%
+  select(-Prefix)
+
+# Add column designating metro tracts as "Metro"
+freight_o_desig <- left_join(freight_pared, metro_tr, by = c("Origin_tract" = "Tract"))
+freight_d_desig <- left_join(freight_o_desig, metro_tr, by = c("Dest_tract" = "Tract"))
+
+# Overwrite all metro tracts with single designation to collapse to metro area
+freight_metro <- freight_d_desig %>%
+  mutate(Origin_tract = ifelse(is.na(Metro_desig.x), Origin_tract, "Metro"),
+         Dest_tract = ifelse(is.na(Metro_desig.y), Dest_tract, "Metro")) %>%
+  rename(Avg_traffic = `Average Daily O-D Traffic (StL Index)`) %>%
+  dplyr::select(Origin_tract, Dest_tract, Avg_traffic) %>%
+  group_by(Origin_tract, Dest_tract) %>%
+  mutate(Avg_traffic = sum(Avg_traffic)) %>%
+  unique()
+
+# Calculate total index going from origin
+freight_origin <- freight_metro %>%
+  group_by(Origin_tract) %>%
+  mutate(Total_origin_stl = sum(Avg_traffic)) %>%
+  select(Origin_tract, Total_origin_stl) %>% 
+  unique()
+
+# Calculate total index coming to destination
+freight_dest <- freight_metro %>%
+  group_by(Dest_tract) %>%
+  mutate(Total_dest_stl = sum(Avg_traffic)) %>%
+  select(Dest_tract, Total_dest_stl) %>% 
+  unique()
+
+# Add totals to O-D matrix
+freight_o <- left_join(freight_metro, freight_origin, by = "Origin_tract")
+freight_d <- left_join(freight_o, freight_dest, by = "Dest_tract")
+
+od_perc <- freight_d %>%
+  mutate(Perc_of_dest_traffic = Avg_traffic/Total_dest_stl*100)
+
+write_excel_csv(od_perc, "Freight StL OD Percentages.csv")
+
+  
 ```
 
