@@ -167,15 +167,63 @@ freight_dest <- freight_metro %>%
   select(Dest_tract, Total_dest_stl) %>% 
   unique()
 
+dest_count <- freight_metro %>%
+  group_by(Dest_tract) %>%
+  count() %>%
+  rename(Count_dest_tract = n)
+
 # Add totals to O-D matrix
 freight_o <- left_join(freight_metro, freight_origin, by = "Origin_tract")
 freight_d <- left_join(freight_o, freight_dest, by = "Dest_tract")
+freight_count <- left_join(freight_d, dest_count, by = "Dest_tract")
 
-od_perc <- freight_d %>%
-  mutate(Perc_of_dest_traffic = Avg_traffic/Total_dest_stl*100)
+od_perc <- freight_count %>%
+  ungroup() %>%
+  mutate(Perc_of_dest_traffic = Avg_traffic/Total_dest_stl*100,
+         Path_id = row_number()) %>%
+  gather(Origin_tract, Dest_tract, key = "Tract_category", value = "Tract")
 
 write_excel_csv(od_perc, "Freight StL OD Percentages.csv")
 
   
+```
+
+# No Metro Attribution
+
+```{r}
+# Read in SL data
+freight_od <- fread("86096_Freight_Tract_to_Tract_10_16_19_1_od_comm.csv")
+
+freight_pared <- freight_od %>%
+  filter(`Day Part` == "0: All Day (12am-12am)" & `Day Type` == "0: All Days (M-Su)") %>%
+  dplyr::select(`Origin Zone Name`, `Destination Zone Name`, `Average Daily O-D Traffic (StL Index)`) %>%
+  separate(`Origin Zone Name`, into = c("Prefix", "Origin_tract"), sep = -11) %>%
+  select(-Prefix) %>%
+  separate(`Destination Zone Name`, into = c("Prefix", "Dest_tract"), sep = -11) %>%
+  select(-Prefix) %>%
+  rename(Avg_traffic = `Average Daily O-D Traffic (StL Index)`)
+
+# Calculate total index coming to destination
+freight_dest_full <- freight_pared %>%
+  group_by(Dest_tract) %>%
+  mutate(Total_dest_stl = sum(Avg_traffic)) %>%
+  select(Dest_tract, Total_dest_stl) %>% 
+  unique()
+
+dest_count_full <- freight_pared %>%
+  group_by(Dest_tract) %>%
+  count() %>%
+  rename(Count_dest_tract = n)
+
+# Add totals to O-D matrix
+freight_d_full <- left_join(freight_pared, freight_dest_full, by = "Dest_tract")
+freight_full_count <- left_join(freight_d_full, dest_count_full, by = "Dest_tract")
+
+# O-D percentages
+od_perc <- freight_count %>%
+  ungroup() %>%
+  mutate(Perc_of_dest_traffic = Avg_traffic/Total_dest_stl*100,
+         Path_id = row_number()) %>%
+  gather(Origin_tract, Dest_tract, key = "Tract_category", value = "Tract")
 ```
 
