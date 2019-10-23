@@ -167,7 +167,9 @@ freight_dest <- freight_metro %>%
   select(Dest_tract, Total_dest_stl) %>% 
   unique()
 
-dest_count <- freight_metro %>%
+dest_count <- freight_d_desig %>%
+  mutate(Origin_tract = ifelse(is.na(Metro_desig.x), Origin_tract, "Metro"),
+         Dest_tract = ifelse(is.na(Metro_desig.y), Dest_tract, "Metro")) %>%
   group_by(Dest_tract) %>%
   count() %>%
   rename(Count_dest_tract = n)
@@ -220,10 +222,32 @@ freight_d_full <- left_join(freight_pared, freight_dest_full, by = "Dest_tract")
 freight_full_count <- left_join(freight_d_full, dest_count_full, by = "Dest_tract")
 
 # O-D percentages
-od_perc <- freight_count %>%
+od_perc_full <- freight_full_count %>%
+  mutate(Origin_tract2 = Origin_tract,
+         Dest_tract2 = Dest_tract) %>%
+  separate(Origin_tract2, into = c("Origin_county", "Origin_block"), sep = 5) %>%
+  separate(Dest_tract2, into = c("Dest_county", "Dest_block"), sep = 5) %>%
+  mutate(Origin_county = ifelse(Origin_county == 27003 |
+                                  Origin_county == 27019 |
+                                  Origin_county == 27037 |
+                                  Origin_county == 27053 |
+                                  Origin_county == 27123 |
+                                  Origin_county == 27139 |
+                                  Origin_county == 27163, "Metro", Origin_county),
+         Dest_county = ifelse(Dest_county == 27003 |
+                                  Dest_county == 27019 |
+                                  Dest_county == 27037 |
+                                  Dest_county == 27053 |
+                                  Dest_county == 27123 |
+                                  Dest_county == 27139 |
+                                  Dest_county == 27163, "Metro", Dest_county),
+         Metro_to_metro = ifelse(Origin_county == "Metro" & Dest_county == "Metro", 1, 0)) %>%
+  filter(Metro_to_metro == 0) %>%
   ungroup() %>%
   mutate(Perc_of_dest_traffic = Avg_traffic/Total_dest_stl*100,
          Path_id = row_number()) %>%
   gather(Origin_tract, Dest_tract, key = "Tract_category", value = "Tract")
+
+write_excel_csv(od_perc_full, "Freight StL OD Percentages No Metro-Metro.csv")
 ```
 
