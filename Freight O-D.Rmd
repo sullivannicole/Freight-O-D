@@ -55,7 +55,7 @@ metro_centroid <- st_centroid(metro_dissolve)
 
 st_write(greater_mn_centroids, "Greater MN Centroids.shp", "ESRI Shapefile")
 st_write(metro_centroids, "Metro Centroid.shp", "ESRI Shapefile")
-
+st_write(metro_dissolve, "Metro Outline.shp", "ESRI Shapefile")
 ```
 
 # Using st_union creates shapefile that doesn't render correctly in Tableau with shape type (works fine with shapefile type) - merge the two shapefiles using Arc so CRS compatibility is fixed automatically
@@ -270,5 +270,47 @@ dbDisconnect(gis_db)
 county_centroids <- st_centroid(mn_counties)
 
 st_write(county_centroids, "MN_County_Centroids.shp")
+```
+
+```{r}
+# MN Counties shapefile used for o-d analysis (contains fewer attributes, but suffices for visualization)
+
+counties_od <- st_read("County O-D/Shapefile/87342_County_County_OD_origin.shp")
+
+counties_od_centroids <- st_centroid(counties_od)
+
+st_write(counties_od_centroids, "OD_County_Centroids.shp")
+```
+
+```{r}
+county_ods <- read_csv("County O-D/87342_County_County_OD_od_comm.csv")
+
+options(scipen=999)
+county_ods_tidy <- county_ods %>%
+  filter(`Vehicle Weight` == "Heavy") %>%
+  group_by(`Destination Zone ID`) %>%
+  mutate(Dest_tot_traffic = sum(`Average Daily O-D Traffic (StL Index)`)) %>%
+  ungroup() %>%
+  dplyr::select(`Origin Zone ID`, `Destination Zone ID`, Dest_tot_traffic, `Average Daily O-D Traffic (StL Index)`) %>%
+  unique() %>%
+  mutate(Perc_of_dest = `Average Daily O-D Traffic (StL Index)`/Dest_tot_traffic) %>%
+  rename(Origin = `Origin Zone ID`,
+         Destination = `Destination Zone ID`) %>%
+  mutate(Path_ID = row_number()) %>%
+  gather(Origin, Destination, key = "OD_Category", value = "Zone_ID")
+
+county_od_count <- county_ods %>%
+  filter(`Vehicle Weight` == "Heavy") %>%
+  group_by(`Destination Zone ID`) %>%
+  count() %>%
+  rename(Count_dests = n,
+         Zone_ID = `Destination Zone ID`) %>%
+  mutate(OD_Category = "Destination")
+
+county_od_w_count <- left_join(county_ods_tidy, county_od_count, by = c("OD_Category", "Zone_ID")) %>%
+  mutate(Count_dests = ifelse(is.na(Count_dests), 0, Count_dests),
+         Count_dests = as.numeric(Count_dests))
+
+write_csv(county_od_w_count, "StL County O-D.csv")
 ```
 
