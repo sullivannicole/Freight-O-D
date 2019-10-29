@@ -9,6 +9,8 @@ knitr::opts_chunk$set(echo = TRUE)
 Sys.setenv(PATH = paste("C:\\Python27\\ArcGIS10.7\\", Sys.getenv("PATH"), sep=";"))
 ```
 
+# Tract-Tract O-D
+
 ```{r}
 library(sf)
 library(tidyverse)
@@ -249,5 +251,24 @@ od_perc_full <- freight_full_count %>%
   gather(Origin_tract, Dest_tract, key = "Tract_category", value = "Tract")
 
 write_excel_csv(od_perc_full, "Freight StL OD Percentages No Metro-Metro.csv")
+
+
+```
+
+# County-County O-D
+
+```{r}
+library(sf)
+library(tidyverse)
+library(odbc)
+
+# Get MN counties as shapefile
+gis_db <- dbConnect(odbc(), "GIS")
+mn_counties <- st_as_sf(dbGetQuery(gis_db, "SELECT *, Shape.STAsText() as wkt FROM GISLibrary.dbo.MNCOUNTIES"), wkt = "wkt", crs = 26915)
+dbDisconnect(gis_db)
+
+county_centroids <- st_centroid(mn_counties)
+
+st_write(county_centroids, "MN_County_Centroids.shp")
 ```
 
